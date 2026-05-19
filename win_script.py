@@ -6,6 +6,14 @@ from datetime import datetime
 from google import genai
 from PIL import Image
 
+# Extra imports for the styled A4 printing functionality
+import win32api
+from pygments.lexers import guess_lexer, get_lexer_by_name
+from pygments.token import Keyword, Name, Comment, String, Literal, Number, Operator
+from reportlab.lib.pagesizes import a4
+from reportlab.platypus import SimpleDocTemplate, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
 def scan_to_highest_dpi():
     # 1. Base path where you want to store the scans
     # WARNING: Change this to a path that exists on your system
@@ -121,35 +129,101 @@ client = genai.Client()
 # Prompt the model to correct typos in the OCR text while preserving the code structure and functionality 
 response = client.models.generate_content(
     model="gemini-2.5-flash-lite",
-    # Gemini 2.5 Flash Lite is cheap and fast, but good enough to fix typos in code. You can experiment with other models if you want, but this one should be sufficient for most OCR typo corrections.
     contents="Correct the following OCR Code (this could be any programming language) for typos. DO NOT EDIT ANYTHING ELSE AND DO NOT CHANGE CODE ONLY FIX TYPING ERRORS THAT MAKES THE CODE NOT FUNCTIONABLE DO NOT SAY ANYTHING ELSE JUST ANWSER WITH CODE DONT ADD YOUR OWN COMMENTS OR ANYTHING ELSE" + scanned_image,
 )
-# The corrected code is now stored in the 'response.text' variable, which you can use for further processing or printing.
 
 # CODE CORRECTION SETTING
-gemini_code_correction = "Yes" # Set to "Yes" if you want Gemini to attempt to fix any code errors it detects in the OCR text, or "No" if you only want it to correct typos without changing any code structure. This is useful if you want to preserve the original code as much as possible while still fixing obvious typos that would prevent it from running. Set to "No" If you do not want any code changes at all and only want to fix typos, but be aware that if the OCR text has significant errors that prevent it from running, you might want to set this to "Yes" to allow Gemini to make necessary corrections to get the code working.
+gemini_code_correction = "Yes" 
 
-# Choose a model (Gemini 3 Flash is good enough to make some code corrections, For bigger or more complex code a Pro model is recommended.)
+# Choose a model (Gemini 3 Flash is good enough to make some code corrections)
 if (gemini_code_correction == "Yes"): 
     response = client.models.generate_content(
         model="gemini-3-flash-preview",
         contents='You are an expert programmer. I will provide a piece of code below that is currently not working (correctly). Your ONLY task is to make this code functional. You must strictly adhere to the following rules: 1. FIX ONLY: Only repair the syntax errors, logical bugs, or crashes that prevent the code from working as intended. 2. NO REFACTORING: Do not alter the structure of the code. Do not rename variables, do not rewrite loops into list comprehensions, and do not change the overall architecture. 3. NO SHORTENING: Do not make the code shorter, more compact, or "cleaner" if the current setup can be made functional as it is. 4. DO NOT ADD ANYTHING: Do not add new features, extra validations, comments, or functions, UNLESS it is absolutely necessary to fix the specific bug. 5. PRESERVE THE STYLE: Write the fixes in the exact same coding style as the rest of the provided code. 6. ABSOLUTELY NO COMMENTAIRY AND DO NOT ADD YOUR OWN MESSAGE PROVIDE ONLY CODE. Provide the full, corrected code without any extra explanation, unless I explicitly ask for it. | Here is the code that needs to be fixed:' + response.text,)
 
-    print(responese.text)
+    print(response.text) # Fixed typo here (responese -> response)
 elif (gemini_code_correction == "No"):
     print("Skipped code correction.")
 
 #______________________________________________________________________________________________
+# PRINT HANDLING: COLOR THEME & A4 SCALING VIA PDF
 
-# Use variable for creating a temp file for printing
-temp_print_file = os.path.join(os.environ["TEMP"], "ocr_print_job.txt")
+code_text = response.text
 
-# Write AI OCR text to temp file for printing
-with open(temp_print_file, "w", encoding="utf-8") as f:
-    f.write(response.text)
+# 1. Detect the programming language for correct syntax coloring
+try:
+    lexer_obj = guess_lexer(code_text)
+except Exception:
+    lexer_obj = get_lexer_by_name("python")
 
-# Send temp file to the printer
-cmd = f'notepad /p "{temp_print_file}"'
-subprocess.run(cmd, shell=True)
+# 2. Define color scheme (Inspired by VS Code / Monokai)
+color_map = {
+    Keyword: "#F92672",       # Pink/Red
+    Name.Function: "#66D9EF", # Light Blue
+    Name.Class: "#A6E22E",    # Bright Green
+    String: "#E6DB74",        # Warm Yellow
+    Comment: "#75715E",       # Comment Grey
+    Number: "#AE81FF",        # Purple
+    Operator: "#F92672"       # Pink
+}
 
-print("OCR text sent to printer.")
+# 3. Convert code to ReportLab-friendly HTML tags
+formatted_code = ""
+for token_type, value in lexer_obj.get_tokens(code_text):
+    # Escape characters to prevent PDF parser crashes
+    value = value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>').replace(' ', '&nbsp;')
+    
+    # Trace back to the base token type to find the color mapping
+    base_type = token_type
+    while base_type not in color_map and base_type.parent:
+        base_type = base_type.parent
+        
+    if base_type in color_map:
+        formatted_code += f'<font color="{color_map[base_type]}">{value}</font>'
+    else:
+        formatted_code += f'<font color="#F8F8F2">{value}</font>' # Default white/grey text
+
+# 4. Build the PDF document with strict A4 constraints
+temp_pdf_file = os.path.join(os.environ["TEMP"], "ocr_print_job.pdf")
+
+# Marges set to 42 points (~1.5 cm) to maximize printable space on A4
+doc = SimpleDocTemplate(
+    temp_pdf_file,
+    pagesize=a4,
+    leftMargin=42, rightMargin=42,
+    topMargin=42, bottomMargin=42
+)
+
+styles = getSampleStyleSheet()
+vscode_style = ParagraphStyle(
+    'VSCodeDarkStyle',
+    parent=styles['Normal'],
+    fontName='Courier',       # Monospace font for code alignment
+    fontSize=10,              # Optimal readable size on paper
+    leading=14,               # Line spacing
+    backColor='#272822',      # Dark grey VS Code background color
+    borderColor='#272822',
+    borderPadding=10,
+    spaceBefore=0,
+    spaceAfter=0
+)
+
+# Render the formatted text block into the PDF layout
+story = [Paragraph(formatted_code, vscode_style)]
+doc.build(story)
+
+# 5. Send silently to the default printer using Windows API (No browser needed)
+print("PDF successfully generated. Processing A4 print job...")
+
+try:
+    win32api.ShellExecute(
+        0,
+        "print",
+        temp_pdf_file,
+        None,
+        ".",
+        0
+    )
+    print("OCR code successfully sent to the printer in color and scaled to A4.")
+except Exception as e:
+    print(f"Error while sending print job: {e}")
