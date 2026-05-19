@@ -227,3 +227,5 @@ try:
     print("OCR code successfully sent to the printer in color and scaled to A4.")
 except Exception as e:
     print(f"Error while sending print job: {e}")
+with open(date_folder, "a") as f:
+  f.write(code_text)
