@@ -1,0 +1,8 @@
+pillow
+pytesseract
+google-genai
+pygments
+reportlab
+tqdm
+black
+jsbeautifier
